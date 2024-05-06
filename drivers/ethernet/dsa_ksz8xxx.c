@@ -1066,9 +1066,7 @@ static struct dsa_api dsa_api_f = {
 	const struct dsa_slave_config dsa_0_slave_##slave##_config = {     \
 		.mac_addr = DT_PROP_OR(slave, local_mac_address, {0})      \
 	};                                                                 \
-	NET_DEVICE_INIT_INSTANCE(CONCAT(dsa_slave_port_, slave),           \
-	"lan" STRINGIFY(n),                                                \
-	n,                                                                 \
+	NET_DEVICE_DT_DEFINE(slave,                                        \
 	dsa_port_init,                                                     \
 	NULL,                                                              \
 	&dsa_context_##n,                                                  \
@@ -1078,17 +1076,6 @@ static struct dsa_api dsa_api_f = {
 	ETHERNET_L2,                                                       \
 	NET_L2_GET_CTX_TYPE(ETHERNET_L2),                                  \
 	NET_ETH_MTU);
-
-#define NET_SLAVE_DEVICE_0_INIT_INSTANCE(slave)				\
-		NET_SLAVE_DEVICE_INIT_INSTANCE(slave, 0)
-#define NET_SLAVE_DEVICE_1_INIT_INSTANCE(slave)				\
-		NET_SLAVE_DEVICE_INIT_INSTANCE(slave, 1)
-#define NET_SLAVE_DEVICE_2_INIT_INSTANCE(slave)				\
-		NET_SLAVE_DEVICE_INIT_INSTANCE(slave, 2)
-#define NET_SLAVE_DEVICE_3_INIT_INSTANCE(slave)				\
-		NET_SLAVE_DEVICE_INIT_INSTANCE(slave, 3)
-#define NET_SLAVE_DEVICE_4_INIT_INSTANCE(slave)				\
-		NET_SLAVE_DEVICE_INIT_INSTANCE(slave, 4)
 
 #if defined(CONFIG_DSA_SPI)
 #define DSA_SPI_BUS_CONFIGURATION(n)					\
