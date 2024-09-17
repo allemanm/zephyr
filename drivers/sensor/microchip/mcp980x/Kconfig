@@ -1,0 +1,49 @@
+# MCP980X temperature sensor configuration options
+
+# Copyright (c) 2024 Basalte bv
+# Copyright (c) 2016 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig MCP980X
+	bool "MCP980X temperature sensor"
+	default y
+	depends on DT_HAS_MICROCHIP_MCP980X_ENABLED
+	select I2C
+	help
+	  Enable driver for MCP980X temperature sensor.
+
+if MCP980X
+
+choice
+	prompt "MCP980X trigger mode"
+	default MCP980X_TRIGGER_NONE
+
+config MCP980X_TRIGGER_NONE
+	bool "No trigger"
+
+config MCP980X_TRIGGER_GLOBAL_THREAD
+	depends on GPIO
+	select MCP980X_TRIGGER
+	bool "Use global thread"
+
+config MCP980X_TRIGGER_OWN_THREAD
+	depends on GPIO
+	select MCP980X_TRIGGER
+	bool "Use own thread"
+
+endchoice
+
+config MCP980X_TRIGGER
+	bool
+
+config MCP980X_THREAD_STACK_SIZE
+	int "Sensor thread stack size"
+	depends on MCP980X_TRIGGER_OWN_THREAD
+	default 1024
+
+config MCP980X_THREAD_PRIORITY
+	int "MCP980X thread priority"
+	depends on MCP980X_TRIGGER_OWN_THREAD
+	default 10
+
+endif # MCP980X

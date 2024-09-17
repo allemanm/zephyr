@@ -1,0 +1,11 @@
+# Copyright (c) 2024, Basalte bv
+# Copyright (c) 2024, Linaro Limited
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+    Microchip MCP9800/9801/9802/9803 Digital Temperature Sensor. See
+    https://ww1.microchip.com/downloads/en/DeviceDoc/21909d.pdf.
+
+include: ["microchip,mcp9808.yaml"]
+
+compatible: "microchip,mcp980x"
