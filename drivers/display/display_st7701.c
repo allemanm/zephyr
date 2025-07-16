@@ -8,6 +8,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/display.h>
+#include <zephyr/drivers/spi.h>
 #include <zephyr/drivers/mipi_dsi.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/sys/byteorder.h>
@@ -61,6 +62,7 @@ LOG_MODULE_REGISTER(st7701, CONFIG_DISPLAY_LOG_LEVEL);
 
 struct st7701_config {
 	const struct device *mipi_dsi;
+	const struct spi_dt_spec bus;
 	const struct gpio_dt_spec reset;
 	const struct gpio_dt_spec backlight;
 	uint8_t data_lanes;
@@ -88,6 +90,7 @@ struct st7701_config {
 	uint8_t gip_ed[17];
 	uint8_t pvgamctrl[17];
 	uint8_t nvgamctrl[17];
+	bool bgr_mode;
 };
 
 struct st7701_data {
@@ -98,18 +101,59 @@ struct st7701_data {
 	enum display_orientation orientation;
 };
 
-static inline int st7701_dcs_write(const struct device *dev, uint8_t cmd, const void *buf,
+static int st7701_spi_write(const struct spi_dt_spec *bus, uint8_t cmd, const uint8_t *buf,
+			    size_t len)
+{
+	uint16_t data;
+	int ret;
+
+	struct spi_buf tx_buf = {.buf = &data, .len = 2};
+	struct spi_buf_set tx_bufs = {.buffers = &tx_buf, .count = 1};
+
+	data = cmd;
+	ret = spi_write_dt(bus, &tx_bufs);
+	if (ret < 0) {
+		LOG_ERR("Failed to write to SPI (%d)", ret);
+		return ret;
+	}
+
+	if (buf == NULL) {
+		return 0;
+	}
+
+	for (size_t index = 0; index < len; ++index) {
+		data = 0x0100 | buf[index];
+		ret = spi_write_dt(bus, &tx_bufs);
+		if (ret < 0) {
+			LOG_ERR("Failed to write to SPI (%d)", ret);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+static inline int st7701_dcs_write(const struct device *dev, uint8_t cmd, const uint8_t *buf,
 				   size_t len)
 {
 	const struct st7701_config *cfg = dev->config;
 	int ret;
 
+#if DT_HAS_COMPAT_ON_BUS_STATUS_OKAY(sitronix_st7701, mipi_dsi)
 	ret = mipi_dsi_dcs_write(cfg->mipi_dsi, cfg->channel, cmd, buf, len);
 	if (ret < 0) {
 		LOG_ERR("DCS 0x%x write failed! (%d)", cmd, ret);
 		return ret;
 	}
+#endif
 
+#if DT_HAS_COMPAT_ON_BUS_STATUS_OKAY(sitronix_st7701, spi)
+	ret = st7701_spi_write(&cfg->bus, cmd, buf, len);
+	if (ret < 0) {
+		LOG_ERR("Failed to write SPI (%d)", ret);
+		return ret;
+	}
+#endif
 	return 0;
 }
 
@@ -117,6 +161,8 @@ static int st7701_short_write_1p(const struct device *dev, uint8_t cmd, uint8_t 
 {
 	const struct st7701_config *cfg = dev->config;
 	int ret;
+
+#if DT_HAS_COMPAT_ON_BUS_STATUS_OKAY(sitronix_st7701, mipi_dsi)
 	uint8_t buf[] = {cmd, val};
 
 	ret = mipi_dsi_generic_write(cfg->mipi_dsi, cfg->channel, buf, sizeof(val));
@@ -124,26 +170,51 @@ static int st7701_short_write_1p(const struct device *dev, uint8_t cmd, uint8_t 
 		LOG_ERR("Short write failed! (%d)", ret);
 		return ret;
 	}
+#endif
+
+#if DT_HAS_COMPAT_ON_BUS_STATUS_OKAY(sitronix_st7701, spi)
+	ret = st7701_spi_write(&cfg->bus, cmd, &val, 1);
+	if (ret < 0) {
+		LOG_ERR("Failed to write SPI (%d)", ret);
+		return ret;
+	}
+#endif
 
 	return 0;
 }
 
-static int st7701_generic_write(const struct device *dev, const void *buf, size_t len)
+static int st7701_generic_write(const struct device *dev, const uint8_t *buf, size_t len)
 {
 	const struct st7701_config *cfg = dev->config;
 	int ret;
 
+	if (len == 0) {
+		LOG_ERR("Len is 0");
+		return -EINVAL;
+	}
+
+#if DT_HAS_COMPAT_ON_BUS_STATUS_OKAY(sitronix_st7701, mipi_dsi)
 	ret = mipi_dsi_generic_write(cfg->mipi_dsi, cfg->channel, buf, len);
 	if (ret < 0) {
 		LOG_ERR("Generic write failed! (%d)", ret);
 		return ret;
 	}
+#endif
+
+#if DT_HAS_COMPAT_ON_BUS_STATUS_OKAY(sitronix_st7701, spi)
+	ret = st7701_spi_write(&cfg->bus, buf[0], &buf[1], len - 1);
+	if (ret < 0) {
+		LOG_ERR("Failed to write SPI (%d)", ret);
+		return ret;
+	}
+#endif
 
 	return 0;
 }
 
 static int st7701_check_id(const struct device *dev)
 {
+#if DT_HAS_COMPAT_ON_BUS_STATUS_OKAY(sitronix_st7701, mipi_dsi)
 	const struct st7701_config *cfg = dev->config;
 	uint32_t id = 0;
 	int ret;
@@ -158,6 +229,7 @@ static int st7701_check_id(const struct device *dev)
 		LOG_ERR("ID 0x%x (should 0x%x)", id, ST7701_ID);
 		return -EINVAL;
 	}
+#endif
 
 	return 0;
 }
@@ -173,7 +245,7 @@ static int st7701_configure(const struct device *dev)
 	const uint8_t ff2[] = {DSI_CMD2BKX_SEL, 0x77, 0x01, 0x00, 0x00, DSI_CMD2BKX_SEL_NONE};
 
 	const uint8_t control0[] = {DSI_CMD2BKX_SEL, 0x77, 0x01, 0x00, 0x00, DSI_CMD2BK0_SEL};
-	const uint8_t control1[] = {0xC0, 0x63, 0x00};
+	const uint8_t control1[] = {0xC0, ((cfg->height / 8) - 1), ((cfg->height % 8) / 2)};
 	const uint8_t control2[] = {0xC1, 0x11, 0x02};
 	const uint8_t control3[] = {0xC2, 0x01, 0x08};
 	const uint8_t control4[] = {0xCC, 0x18};
@@ -245,6 +317,12 @@ static int st7701_configure(const struct device *dev)
 	}
 
 	ret = st7701_dcs_write(dev, MIPI_DCS_SET_PIXEL_FORMAT, buf, 1);
+	if (ret < 0) {
+		return ret;
+	}
+
+	buf[0] = cfg->bgr_mode ? 0x08 : 0x00;
+	ret = st7701_dcs_write(dev, MIPI_DCS_SET_ADDRESS_MODE, buf, 1);
 	if (ret < 0) {
 		return ret;
 	}
@@ -368,7 +446,6 @@ static int st7701_init(const struct device *dev)
 {
 	const struct st7701_config *cfg = dev->config;
 	struct st7701_data *data = dev->data;
-	struct mipi_dsi_device mdev;
 	int ret;
 
 	if (cfg->reset.port) {
@@ -377,14 +454,14 @@ static int st7701_init(const struct device *dev)
 			return -ENODEV;
 		}
 
-		ret = gpio_pin_configure_dt(&cfg->reset, GPIO_OUTPUT_INACTIVE);
+		ret = gpio_pin_configure_dt(&cfg->reset, GPIO_OUTPUT_ACTIVE);
 		if (ret < 0) {
 			LOG_ERR("Reset display failed! (%d)", ret);
 			return ret;
 		}
 
 		k_msleep(10);
-		ret = gpio_pin_set_dt(&cfg->reset, 1);
+		ret = gpio_pin_set_dt(&cfg->reset, 0);
 		if (ret < 0) {
 			LOG_ERR("Enable display failed! (%d)", ret);
 			return ret;
@@ -412,6 +489,15 @@ static int st7701_init(const struct device *dev)
 		data->orientation = DISPLAY_ORIENTATION_ROTATED_270;
 	}
 
+#if DT_HAS_COMPAT_ON_BUS_STATUS_OKAY(sitronix_st7701, spi)
+	if (!spi_is_ready_dt(&cfg->bus)) {
+		LOG_ERR("SPI device not ready");
+		return -ENODEV;
+	}
+#endif
+
+#if DT_HAS_COMPAT_ON_BUS_STATUS_OKAY(sitronix_st7701, mipi_dsi)
+	struct mipi_dsi_device mdev;
 	/* attach to MIPI-DSI host */
 	mdev.data_lanes = cfg->data_lanes;
 	mdev.pixfmt = data->dsi_pixel_format;
@@ -431,6 +517,7 @@ static int st7701_init(const struct device *dev)
 		LOG_ERR("MIPI-DSI attach failed! (%d)", ret);
 		return ret;
 	}
+#endif
 
 	ret = st7701_check_id(dev);
 	if (ret) {
@@ -453,42 +540,78 @@ static int st7701_init(const struct device *dev)
 	return 0;
 }
 
-#define ST7701_DEVICE(inst)                                                                        \
-	static const struct st7701_config st7701_config_##inst = {                                 \
-		.mipi_dsi = DEVICE_DT_GET(DT_INST_BUS(inst)),                                      \
-		.reset = GPIO_DT_SPEC_INST_GET_OR(inst, reset_gpios, {0}),                         \
-		.backlight = GPIO_DT_SPEC_INST_GET_OR(inst, bl_gpios, {0}),                        \
-		.data_lanes = DT_INST_PROP_BY_IDX(inst, data_lanes, 0),                            \
-		.width = DT_INST_PROP(inst, width),                                                \
-		.height = DT_INST_PROP(inst, height),                                              \
-		.channel = DT_INST_REG_ADDR(inst),                                                 \
-		.rotation = DT_INST_PROP(inst, rotation),                                          \
-		.hbp = DT_PROP(DT_INST_CHILD(inst, display_timings), hback_porch),                 \
-		.hsync = DT_PROP(DT_INST_CHILD(inst, display_timings), hsync_len),                 \
-		.hfp = DT_PROP(DT_INST_CHILD(inst, display_timings), hfront_porch),                \
-		.vbp = DT_PROP(DT_INST_CHILD(inst, display_timings), vback_porch),                 \
-		.vsync = DT_PROP(DT_INST_CHILD(inst, display_timings), vsync_len),                 \
-		.vfp = DT_PROP(DT_INST_CHILD(inst, display_timings), vfront_porch),                \
-		.gip_e0 = DT_INST_PROP_OR(inst, gip_e0, {}),                                       \
-		.gip_e1 = DT_INST_PROP_OR(inst, gip_e1, {}),                                       \
-		.gip_e2 = DT_INST_PROP_OR(inst, gip_e2, {}),                                       \
-		.gip_e3 = DT_INST_PROP_OR(inst, gip_e3, {}),                                       \
-		.gip_e4 = DT_INST_PROP_OR(inst, gip_e4, {}),                                       \
-		.gip_e5 = DT_INST_PROP_OR(inst, gip_e5, {}),                                       \
-		.gip_e6 = DT_INST_PROP_OR(inst, gip_e6, {}),                                       \
-		.gip_e7 = DT_INST_PROP_OR(inst, gip_e7, {}),                                       \
-		.gip_e8 = DT_INST_PROP_OR(inst, gip_e8, {}),                                       \
-		.gip_eb = DT_INST_PROP_OR(inst, gip_eb, {}),                                       \
-		.gip_ec = DT_INST_PROP_OR(inst, gip_ec, {}),                                       \
-		.gip_ed = DT_INST_PROP_OR(inst, gip_ed, {}),                                       \
-		.pvgamctrl = DT_INST_PROP_OR(inst, pvgamctrl, {}),                                 \
-		.nvgamctrl = DT_INST_PROP_OR(inst, nvgamctrl, {}),                                 \
+#define ST7701_DEVICE_SPI(node_id)                                                                 \
+	static const struct st7701_config st7701_config_##node_id = {                              \
+		.bus = SPI_DT_SPEC_GET(node_id, SPI_OP_MODE_MASTER | SPI_WORD_SET(9U), 0),         \
+		.reset = GPIO_DT_SPEC_GET_OR(node_id, reset_gpios, {0}),                           \
+		.backlight = GPIO_DT_SPEC_GET_OR(node_id, bl_gpios, {0}),                          \
+		.width = DT_PROP(node_id, width),                                                  \
+		.height = DT_PROP(node_id, height),                                                \
+		.channel = DT_REG_ADDR(node_id),                                                   \
+		.rotation = DT_PROP(node_id, rotation),                                            \
+		.gip_e0 = DT_PROP_OR(node_id, gip_e0, {}),                                         \
+		.gip_e1 = DT_PROP_OR(node_id, gip_e1, {}),                                         \
+		.gip_e2 = DT_PROP_OR(node_id, gip_e2, {}),                                         \
+		.gip_e3 = DT_PROP_OR(node_id, gip_e3, {}),                                         \
+		.gip_e4 = DT_PROP_OR(node_id, gip_e4, {}),                                         \
+		.gip_e5 = DT_PROP_OR(node_id, gip_e5, {}),                                         \
+		.gip_e6 = DT_PROP_OR(node_id, gip_e6, {}),                                         \
+		.gip_e7 = DT_PROP_OR(node_id, gip_e7, {}),                                         \
+		.gip_e8 = DT_PROP_OR(node_id, gip_e8, {}),                                         \
+		.gip_eb = DT_PROP_OR(node_id, gip_eb, {}),                                         \
+		.gip_ec = DT_PROP_OR(node_id, gip_ec, {}),                                         \
+		.gip_ed = DT_PROP_OR(node_id, gip_ed, {}),                                         \
+		.pvgamctrl = DT_PROP_OR(node_id, pvgamctrl, {}),                                   \
+		.nvgamctrl = DT_PROP_OR(node_id, nvgamctrl, {}),                                   \
+		.bgr_mode = DT_PROP_OR(node_id, bgr_mode, 0),                                      \
 	};                                                                                         \
-	static struct st7701_data st7701_data_##inst = {                                           \
-		.dsi_pixel_format = DT_INST_PROP(inst, pixel_format),                              \
+	static struct st7701_data st7701_data_##node_id = {                                        \
+		.dsi_pixel_format = DT_PROP(node_id, pixel_format),                                \
 	};                                                                                         \
-	DEVICE_DT_INST_DEFINE(inst, &st7701_init, NULL, &st7701_data_##inst,                       \
-			      &st7701_config_##inst, POST_KERNEL,                                  \
-			      CONFIG_DISPLAY_INIT_PRIORITY, &st7701_api);
+	DEVICE_DT_DEFINE(node_id, &st7701_init, NULL, &st7701_data_##node_id,                      \
+			 &st7701_config_##node_id, POST_KERNEL, CONFIG_DISPLAY_INIT_PRIORITY,      \
+			 &st7701_api);
 
-DT_INST_FOREACH_STATUS_OKAY(ST7701_DEVICE)
+#define ST7701_DEVICE_MIPI(node_id)                                                                \
+	static const struct st7701_config st7701_config_##node_id = {                              \
+		.mipi_dsi = DEVICE_DT_GET(DT_INST_BUS(inst)),                                      \
+		.reset = GPIO_DT_SPEC_GET_OR(node_id, reset_gpios, {0}),                           \
+		.backlight = GPIO_DT_SPEC_GET_OR(node_id, bl_gpios, {0}),                          \
+		.width = DT_PROP(node_id, width),                                                  \
+		.height = DT_PROP(node_id, height),                                                \
+		.channel = DT_REG_ADDR(node_id),                                                   \
+		.rotation = DT_PROP(node_id, rotation),                                            \
+		.hbp = DT_PROP_OR(DT_CHILD(node_id, display_timings), hback_porch, 0),             \
+		.hsync = DT_PROP_OR(DT_CHILD(node_id, display_timings), hsync_len, 0),             \
+		.hfp = DT_PROP_OR(DT_CHILD(node_id, display_timings), hfront_porch, 0),            \
+		.vbp = DT_PROP_OR(DT_CHILD(node_id, display_timings), vback_porch, 0),             \
+		.vsync = DT_PROP_OR(DT_CHILD(node_id, display_timings), vsync_len, 0),             \
+		.vfp = DT_PROP_OR(DT_CHILD(node_id, display_timings), vfront_porch, 0),            \
+		.gip_e0 = DT_PROP_OR(node_id, gip_e0, {}),                                         \
+		.gip_e1 = DT_PROP_OR(node_id, gip_e1, {}),                                         \
+		.gip_e2 = DT_PROP_OR(node_id, gip_e2, {}),                                         \
+		.gip_e3 = DT_PROP_OR(node_id, gip_e3, {}),                                         \
+		.gip_e4 = DT_PROP_OR(node_id, gip_e4, {}),                                         \
+		.gip_e5 = DT_PROP_OR(node_id, gip_e5, {}),                                         \
+		.gip_e6 = DT_PROP_OR(node_id, gip_e6, {}),                                         \
+		.gip_e7 = DT_PROP_OR(node_id, gip_e7, {}),                                         \
+		.gip_e8 = DT_PROP_OR(node_id, gip_e8, {}),                                         \
+		.gip_eb = DT_PROP_OR(node_id, gip_eb, {}),                                         \
+		.gip_ec = DT_PROP_OR(node_id, gip_ec, {}),                                         \
+		.gip_ed = DT_PROP_OR(node_id, gip_ed, {}),                                         \
+		.pvgamctrl = DT_PROP_OR(node_id, pvgamctrl, {}),                                   \
+		.nvgamctrl = DT_PROP_OR(node_id, nvgamctrl, {}),                                   \
+		.bgr_mode = DT_PROP_OR(node_id, bgr_mode, 0),                                      \
+	};                                                                                         \
+	static struct st7701_data st7701_data_##node_id = {                                        \
+		.dsi_pixel_format = DT_PROP(node_id, pixel_format),                                \
+	};                                                                                         \
+	DEVICE_DT_DEFINE(node_id, &st7701_init, NULL, &st7701_data_##node_id,                      \
+			 &st7701_config_##node_id, POST_KERNEL, CONFIG_DISPLAY_INIT_PRIORITY,      \
+			 &st7701_api);
+
+#define ST7701_DEVICE(node_id)                                                                     \
+	COND_CODE_1(DT_ON_BUS(node_id, spi), \
+	(ST7701_DEVICE_SPI(node_id)), (ST7701_DEVICE_MIPI(node_id)))
+
+DT_FOREACH_STATUS_OKAY(sitronix_st7701, ST7701_DEVICE)

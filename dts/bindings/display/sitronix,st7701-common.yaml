@@ -7,9 +7,7 @@ description: |
     The Sitronix ST7701 is a 16.7M colors TFT-LCD controller
     with a maximum 480RGBx864 resolution.
 
-compatible: "sitronix,st7701"
-
-include: [mipi-dsi-device.yaml, display-controller.yaml]
+include: [display-controller.yaml]
 
 properties:
   reset-gpios:
@@ -34,6 +32,10 @@ properties:
       - 270
     description: |
       Display rotation (CW) in degrees. Defaults to 0, display default.
+
+  bgr-mode:
+    type: boolean
+    description: Enables BGR mode
 
   gip-e0:
     type: uint8-array
@@ -83,6 +85,10 @@ properties:
     type: uint8-array
     description: GIP setting at address 0xED.
 
+  gip-ef:
+    type: uint8-array
+    description: GIP setting at address 0xEF.
+
   pvgamctrl:
     type: uint8-array
     description: Positive voltage gamma control.
@@ -90,3 +96,9 @@ properties:
   nvgamctrl:
     type: uint8-array
     description: Negative voltage gamma control.
+
+  pixel-format:
+    type: int
+    required: true
+    description:
+      Pixel format. Available formats in dt-bindings/mipi_dsi/mipi_dsi.h.
