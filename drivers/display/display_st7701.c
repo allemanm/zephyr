@@ -8,6 +8,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/display.h>
+#include <zephyr/drivers/spi.h>
 #include <zephyr/drivers/mipi_dsi.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/sys/byteorder.h>
@@ -59,8 +60,23 @@ LOG_MODULE_REGISTER(st7701, CONFIG_DISPLAY_LOG_LEVEL);
 /* Adaptive Brightness Control: moving image. */
 #define ST7701_WRCABC_MV  0x03U
 
+typedef int (*st7701_dcs_write)(const struct device *dev, uint8_t cmd, const uint8_t *buf,
+				size_t len);
+typedef int (*st7701_generic_write)(const struct device *dev, const uint8_t *buf, size_t len);
+typedef int (*st7701_init_protocol)(const struct device *dev);
+
 struct st7701_config {
-	const struct device *mipi_dsi;
+	const union {
+#if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
+		const struct spi_dt_spec bus;
+#endif
+#if DT_ANY_INST_ON_BUS_STATUS_OKAY(mipi_dsi)
+		const struct device *mipi_dsi;
+#endif
+	};
+	st7701_dcs_write dcs_write;
+	st7701_generic_write generic_write;
+	st7701_init_protocol init_protocol;
 	const struct gpio_dt_spec reset;
 	const struct gpio_dt_spec backlight;
 	uint8_t data_lanes;
@@ -98,8 +114,9 @@ struct st7701_data {
 	enum display_orientation orientation;
 };
 
-static inline int st7701_dcs_write(const struct device *dev, uint8_t cmd, const void *buf,
-				   size_t len)
+#if DT_ANY_INST_ON_BUS_STATUS_OKAY(mipi_dsi)
+static int st7701_dcs_write_mipi(const struct device *dev, uint8_t cmd, const uint8_t *buf,
+				 size_t len)
 {
 	const struct st7701_config *cfg = dev->config;
 	int ret;
@@ -113,22 +130,7 @@ static inline int st7701_dcs_write(const struct device *dev, uint8_t cmd, const 
 	return 0;
 }
 
-static int st7701_short_write_1p(const struct device *dev, uint8_t cmd, uint8_t val)
-{
-	const struct st7701_config *cfg = dev->config;
-	int ret;
-	uint8_t buf[] = {cmd, val};
-
-	ret = mipi_dsi_generic_write(cfg->mipi_dsi, cfg->channel, buf, sizeof(val));
-	if (ret < 0) {
-		LOG_ERR("Short write failed! (%d)", ret);
-		return ret;
-	}
-
-	return 0;
-}
-
-static int st7701_generic_write(const struct device *dev, const void *buf, size_t len)
+static int st7701_generic_write_mipi(const struct device *dev, const uint8_t *buf, size_t len)
 {
 	const struct st7701_config *cfg = dev->config;
 	int ret;
@@ -138,7 +140,6 @@ static int st7701_generic_write(const struct device *dev, const void *buf, size_
 		LOG_ERR("Generic write failed! (%d)", ret);
 		return ret;
 	}
-
 	return 0;
 }
 
@@ -162,12 +163,141 @@ static int st7701_check_id(const struct device *dev)
 	return 0;
 }
 
+static int st7701_init_mipi(const struct device *dev)
+{
+	const struct st7701_config *cfg = dev->config;
+	struct st7701_data *data = dev->data;
+	struct mipi_dsi_device mdev;
+	int ret;
+	/* attach to MIPI-DSI host */
+	mdev.data_lanes = cfg->data_lanes;
+	mdev.pixfmt = data->dsi_pixel_format;
+	mdev.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST | MIPI_DSI_MODE_LPM;
+
+	mdev.timings.hactive = cfg->width;
+	mdev.timings.hbp = cfg->hbp;
+	mdev.timings.hsync = cfg->hsync;
+	mdev.timings.hfp = cfg->hfp;
+	mdev.timings.vactive = cfg->height;
+	mdev.timings.vbp = cfg->vbp;
+	mdev.timings.vsync = cfg->vsync;
+	mdev.timings.vfp = cfg->vfp;
+
+	ret = mipi_dsi_attach(cfg->mipi_dsi, cfg->channel, &mdev);
+	if (ret < 0) {
+		LOG_ERR("MIPI-DSI attach failed! (%d)", ret);
+		return ret;
+	}
+
+	ret = st7701_check_id(dev);
+	if (ret) {
+		LOG_ERR("Panel ID check failed! (%d)", ret);
+		return ret;
+	}
+
+	return 0;
+}
+#endif /* #if DT_ANY_INST_ON_BUS_STATUS_OKAY(mipi_dsi) */
+
+#if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
+static int st7701_spi_write(const struct spi_dt_spec *bus, uint8_t cmd, const uint8_t *buf,
+			    size_t len)
+{
+	uint16_t data;
+	int ret;
+
+	struct spi_buf tx_buf = {.buf = &data, .len = 2};
+	struct spi_buf_set tx_bufs = {.buffers = &tx_buf, .count = 1};
+
+	data = cmd;
+	ret = spi_write_dt(bus, &tx_bufs);
+	if (ret < 0) {
+		LOG_ERR("Failed to write to SPI (%d)", ret);
+		return ret;
+	}
+
+	if (buf == NULL) {
+		return 0;
+	}
+
+	for (size_t index = 0; index < len; ++index) {
+		data = 0x0100 | buf[index];
+		ret = spi_write_dt(bus, &tx_bufs);
+		if (ret < 0) {
+			LOG_ERR("Failed to write to SPI (%d)", ret);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+static int st7701_dcs_write_spi(const struct device *dev, uint8_t cmd, const uint8_t *buf,
+				size_t len)
+{
+	int ret;
+	const struct st7701_config *cfg = dev->config;
+
+	ret = st7701_spi_write(&cfg->bus, cmd, buf, len);
+	if (ret < 0) {
+		LOG_ERR("Failed to write SPI (%d)", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int st7701_generic_write_spi(const struct device *dev, const uint8_t *buf, size_t len)
+{
+	const struct st7701_config *cfg = dev->config;
+	int ret;
+
+	if (len == 0) {
+		LOG_ERR("Len is 0");
+		return -EINVAL;
+	}
+
+	ret = st7701_spi_write(&cfg->bus, buf[0], &buf[1], len - 1);
+	if (ret < 0) {
+		LOG_ERR("Failed to write SPI (%d)", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int st7701_init_spi(const struct device *dev)
+{
+	const struct st7701_config *cfg = dev->config;
+
+	if (!spi_is_ready_dt(&cfg->bus)) {
+		LOG_ERR("SPI device not ready");
+		return -ENODEV;
+	}
+
+	return 0;
+}
+#endif /* DT_ANY_INST_ON_BUS_STATUS_OKAY(spi) */
+
+static int st7701_short_write_1p(const struct device *dev, uint8_t cmd, uint8_t val)
+{
+	const struct st7701_config *cfg = dev->config;
+	uint8_t buf[] = {cmd, val};
+
+	cfg->generic_write(dev, buf, sizeof(buf));
+
+	return 0;
+}
+
 static int st7701_configure(const struct device *dev)
 {
 	struct st7701_data *data = dev->data;
 	const struct st7701_config *cfg = dev->config;
 	uint8_t buf[4];
 	int ret;
+
+	/* To minimize changes and avoid duplication, we reused the existing functions,
+	 * definitions, and naming conventions from the former MIPI-only driver. */
 
 	const uint8_t ff1[] = {DSI_CMD2BKX_SEL, 0x77, 0x01, 0x00, 0x00, DSI_CMD2BK1_SEL};
 	const uint8_t ff2[] = {DSI_CMD2BKX_SEL, 0x77, 0x01, 0x00, 0x00, DSI_CMD2BKX_SEL_NONE};
@@ -178,18 +308,18 @@ static int st7701_configure(const struct device *dev)
 	const uint8_t control3[] = {0xC2, 0x01, 0x08};
 	const uint8_t control4[] = {0xCC, 0x18};
 
-	st7701_generic_write(dev, control0, sizeof(control0));
-	st7701_generic_write(dev, control1, sizeof(control1));
-	st7701_generic_write(dev, control2, sizeof(control2));
-	st7701_generic_write(dev, control3, sizeof(control3));
-	st7701_generic_write(dev, control4, sizeof(control4));
+	cfg->generic_write(dev, control0, sizeof(control0));
+	cfg->generic_write(dev, control1, sizeof(control1));
+	cfg->generic_write(dev, control2, sizeof(control2));
+	cfg->generic_write(dev, control3, sizeof(control3));
+	cfg->generic_write(dev, control4, sizeof(control4));
 
 	/* Gamma Cluster Setting */
-	st7701_generic_write(dev, cfg->pvgamctrl, sizeof(cfg->pvgamctrl));
-	st7701_generic_write(dev, cfg->nvgamctrl, sizeof(cfg->nvgamctrl));
+	cfg->generic_write(dev, cfg->pvgamctrl, sizeof(cfg->pvgamctrl));
+	cfg->generic_write(dev, cfg->nvgamctrl, sizeof(cfg->nvgamctrl));
 
 	/* Initial power control registers */
-	st7701_generic_write(dev, ff1, sizeof(ff1));
+	cfg->generic_write(dev, ff1, sizeof(ff1));
 
 	st7701_short_write_1p(dev, DSI_CMD2_BK1_VRHS, 0x65);
 	st7701_short_write_1p(dev, DSI_CMD2_BK1_VCOM, 0x34);
@@ -207,24 +337,24 @@ static int st7701_configure(const struct device *dev)
 	k_msleep(100);
 
 	/* GIP Setting */
-	st7701_generic_write(dev, cfg->gip_e0, sizeof(cfg->gip_e0));
-	st7701_generic_write(dev, cfg->gip_e1, sizeof(cfg->gip_e1));
-	st7701_generic_write(dev, cfg->gip_e2, sizeof(cfg->gip_e2));
-	st7701_generic_write(dev, cfg->gip_e3, sizeof(cfg->gip_e3));
-	st7701_generic_write(dev, cfg->gip_e4, sizeof(cfg->gip_e4));
-	st7701_generic_write(dev, cfg->gip_e5, sizeof(cfg->gip_e5));
-	st7701_generic_write(dev, cfg->gip_e6, sizeof(cfg->gip_e6));
-	st7701_generic_write(dev, cfg->gip_e7, sizeof(cfg->gip_e7));
-	st7701_generic_write(dev, cfg->gip_e8, sizeof(cfg->gip_e8));
-	st7701_generic_write(dev, cfg->gip_eb, sizeof(cfg->gip_eb));
-	st7701_generic_write(dev, cfg->gip_ec, sizeof(cfg->gip_ec));
-	st7701_generic_write(dev, cfg->gip_ed, sizeof(cfg->gip_ed));
+	cfg->generic_write(dev, cfg->gip_e0, sizeof(cfg->gip_e0));
+	cfg->generic_write(dev, cfg->gip_e1, sizeof(cfg->gip_e1));
+	cfg->generic_write(dev, cfg->gip_e2, sizeof(cfg->gip_e2));
+	cfg->generic_write(dev, cfg->gip_e3, sizeof(cfg->gip_e3));
+	cfg->generic_write(dev, cfg->gip_e4, sizeof(cfg->gip_e4));
+	cfg->generic_write(dev, cfg->gip_e5, sizeof(cfg->gip_e5));
+	cfg->generic_write(dev, cfg->gip_e6, sizeof(cfg->gip_e6));
+	cfg->generic_write(dev, cfg->gip_e7, sizeof(cfg->gip_e7));
+	cfg->generic_write(dev, cfg->gip_e8, sizeof(cfg->gip_e8));
+	cfg->generic_write(dev, cfg->gip_eb, sizeof(cfg->gip_eb));
+	cfg->generic_write(dev, cfg->gip_ec, sizeof(cfg->gip_ec));
+	cfg->generic_write(dev, cfg->gip_ed, sizeof(cfg->gip_ed));
 
 	/* Bank1 setting */
-	st7701_generic_write(dev, ff2, sizeof(ff2));
+	cfg->generic_write(dev, ff2, sizeof(ff2));
 
 	/* Exit sleep mode */
-	ret = st7701_dcs_write(dev, MIPI_DCS_EXIT_SLEEP_MODE, NULL, 0);
+	ret = cfg->dcs_write(dev, MIPI_DCS_EXIT_SLEEP_MODE, NULL, 0);
 	if (ret < 0) {
 		return ret;
 	}
@@ -244,7 +374,7 @@ static int st7701_configure(const struct device *dev)
 		return -ENOTSUP;
 	}
 
-	ret = st7701_dcs_write(dev, MIPI_DCS_SET_PIXEL_FORMAT, buf, 1);
+	ret = cfg->dcs_write(dev, MIPI_DCS_SET_PIXEL_FORMAT, buf, 1);
 	if (ret < 0) {
 		return ret;
 	}
@@ -252,7 +382,7 @@ static int st7701_configure(const struct device *dev)
 	buf[0] = 0x00;
 	buf[1] = 0x00;
 	sys_put_be16(data->xres, (uint8_t *)&buf[2]);
-	ret = st7701_dcs_write(dev, MIPI_DCS_SET_COLUMN_ADDRESS, buf, 4);
+	ret = cfg->dcs_write(dev, MIPI_DCS_SET_COLUMN_ADDRESS, buf, 4);
 	if (ret < 0) {
 		return ret;
 	}
@@ -260,41 +390,41 @@ static int st7701_configure(const struct device *dev)
 	buf[0] = 0x00;
 	buf[1] = 0x00;
 	sys_put_be16(data->yres, (uint8_t *)&buf[2]);
-	ret = st7701_dcs_write(dev, MIPI_DCS_SET_PAGE_ADDRESS, buf, 4);
+	ret = cfg->dcs_write(dev, MIPI_DCS_SET_PAGE_ADDRESS, buf, 4);
 	if (ret < 0) {
 		return ret;
 	}
 
 	/* Backlight control */
 	buf[0] = ST7701_WRCTRLD_BCTRL | ST7701_WRCTRLD_DD | ST7701_WRCTRLD_BL;
-	ret = st7701_dcs_write(dev, MIPI_DCS_WRITE_CONTROL_DISPLAY, buf, 1);
+	ret = cfg->dcs_write(dev, MIPI_DCS_WRITE_CONTROL_DISPLAY, buf, 1);
 	if (ret < 0) {
 		return ret;
 	}
 
 	/* Adaptive brightness control */
 	buf[0] = ST7701_WRCABC_UI;
-	ret = st7701_dcs_write(dev, MIPI_DCS_WRITE_POWER_SAVE, buf, 1);
+	ret = cfg->dcs_write(dev, MIPI_DCS_WRITE_POWER_SAVE, buf, 1);
 	if (ret < 0) {
 		return ret;
 	}
 
 	/* Adaptive brightness control minimum brightness */
 	buf[0] = 0xFF;
-	ret = st7701_dcs_write(dev, MIPI_DCS_SET_CABC_MIN_BRIGHTNESS, buf, 1);
+	ret = cfg->dcs_write(dev, MIPI_DCS_SET_CABC_MIN_BRIGHTNESS, buf, 1);
 	if (ret < 0) {
 		return ret;
 	}
 
 	/* Brightness */
 	buf[0] = 0xFF;
-	ret = st7701_dcs_write(dev, MIPI_DCS_SET_DISPLAY_BRIGHTNESS, buf, 1);
+	ret = cfg->dcs_write(dev, MIPI_DCS_SET_DISPLAY_BRIGHTNESS, buf, 1);
 	if (ret < 0) {
 		return ret;
 	}
 
 	/* Display On */
-	ret = st7701_dcs_write(dev, MIPI_DCS_SET_DISPLAY_ON, NULL, 0);
+	ret = cfg->dcs_write(dev, MIPI_DCS_SET_DISPLAY_ON, NULL, 0);
 	if (ret < 0) {
 		return ret;
 	}
@@ -315,7 +445,7 @@ static int st7701_blanking_on(const struct device *dev)
 		}
 	}
 
-	return st7701_dcs_write(dev, MIPI_DCS_SET_DISPLAY_OFF, NULL, 0);
+	return cfg->dcs_write(dev, MIPI_DCS_SET_DISPLAY_OFF, NULL, 0);
 }
 
 static int st7701_blanking_off(const struct device *dev)
@@ -331,12 +461,14 @@ static int st7701_blanking_off(const struct device *dev)
 		}
 	}
 
-	return st7701_dcs_write(dev, MIPI_DCS_SET_DISPLAY_ON, NULL, 0);
+	return cfg->dcs_write(dev, MIPI_DCS_SET_DISPLAY_ON, NULL, 0);
 }
 
 static int st7701_set_brightness(const struct device *dev, uint8_t brightness)
 {
-	return st7701_dcs_write(dev, MIPI_DCS_SET_DISPLAY_BRIGHTNESS, &brightness, 1);
+	const struct st7701_config *cfg = dev->config;
+
+	return cfg->dcs_write(dev, MIPI_DCS_SET_DISPLAY_BRIGHTNESS, &brightness, 1);
 }
 
 static void st7701_get_capabilities(const struct device *dev,
@@ -368,7 +500,6 @@ static int st7701_init(const struct device *dev)
 {
 	const struct st7701_config *cfg = dev->config;
 	struct st7701_data *data = dev->data;
-	struct mipi_dsi_device mdev;
 	int ret;
 
 	if (cfg->reset.port) {
@@ -412,29 +543,9 @@ static int st7701_init(const struct device *dev)
 		data->orientation = DISPLAY_ORIENTATION_ROTATED_270;
 	}
 
-	/* attach to MIPI-DSI host */
-	mdev.data_lanes = cfg->data_lanes;
-	mdev.pixfmt = data->dsi_pixel_format;
-	mdev.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST | MIPI_DSI_MODE_LPM;
-
-	mdev.timings.hactive = cfg->width;
-	mdev.timings.hbp = cfg->hbp;
-	mdev.timings.hsync = cfg->hsync;
-	mdev.timings.hfp = cfg->hfp;
-	mdev.timings.vactive = cfg->height;
-	mdev.timings.vbp = cfg->vbp;
-	mdev.timings.vsync = cfg->vsync;
-	mdev.timings.vfp = cfg->vfp;
-
-	ret = mipi_dsi_attach(cfg->mipi_dsi, cfg->channel, &mdev);
+	ret = cfg->init_protocol(dev);
 	if (ret < 0) {
-		LOG_ERR("MIPI-DSI attach failed! (%d)", ret);
-		return ret;
-	}
-
-	ret = st7701_check_id(dev);
-	if (ret) {
-		LOG_ERR("Panel ID check failed! (%d)", ret);
+		LOG_ERR("Failed to init st7701 protocol(%d)", ret);
 		return ret;
 	}
 
@@ -453,22 +564,34 @@ static int st7701_init(const struct device *dev)
 	return 0;
 }
 
+#define ST7701_CONFIG_SPI(inst)                                                                    \
+	.bus = SPI_DT_SPEC_INST_GET(inst, SPI_OP_MODE_MASTER | SPI_WORD_SET(9U), 0),               \
+	.generic_write = st7701_generic_write_spi, .dcs_write = st7701_dcs_write_spi,              \
+	.init_protocol = st7701_init_spi
+
+#define ST7701_CONFIG_MIPI(inst)                                                                   \
+	.mipi_dsi = DEVICE_DT_GET(DT_INST_BUS(inst)),                                              \
+	.generic_write = st7701_generic_write_mipi, .dcs_write = st7701_dcs_write_mipi,            \
+	.init_protocol = st7701_init_mipi,                                                         \
+	.hbp = DT_INST_PROP_OR(DT_CHILD(inst, display_timings), hback_porch, 0),                   \
+	.data_lanes = DT_INST_PROP_BY_IDX(inst, data_lanes, 0),                                    \
+	.hbp = DT_PROP(DT_INST_CHILD(inst, display_timings), hback_porch),                         \
+	.hsync = DT_PROP(DT_INST_CHILD(inst, display_timings), hsync_len),                         \
+	.hfp = DT_PROP(DT_INST_CHILD(inst, display_timings), hfront_porch),                        \
+	.vbp = DT_PROP(DT_INST_CHILD(inst, display_timings), vback_porch),                         \
+	.vsync = DT_PROP(DT_INST_CHILD(inst, display_timings), vsync_len),                         \
+	.vfp = DT_PROP(DT_INST_CHILD(inst, display_timings), vfront_porch)
+
 #define ST7701_DEVICE(inst)                                                                        \
 	static const struct st7701_config st7701_config_##inst = {                                 \
-		.mipi_dsi = DEVICE_DT_GET(DT_INST_BUS(inst)),                                      \
+		COND_CODE_1(DT_INST_ON_BUS(inst, spi), (ST7701_CONFIG_SPI(inst)),                  \
+		(ST7701_CONFIG_MIPI(inst))),                                                       \
 		.reset = GPIO_DT_SPEC_INST_GET_OR(inst, reset_gpios, {0}),                         \
 		.backlight = GPIO_DT_SPEC_INST_GET_OR(inst, bl_gpios, {0}),                        \
-		.data_lanes = DT_INST_PROP_BY_IDX(inst, data_lanes, 0),                            \
 		.width = DT_INST_PROP(inst, width),                                                \
 		.height = DT_INST_PROP(inst, height),                                              \
 		.channel = DT_INST_REG_ADDR(inst),                                                 \
 		.rotation = DT_INST_PROP(inst, rotation),                                          \
-		.hbp = DT_PROP(DT_INST_CHILD(inst, display_timings), hback_porch),                 \
-		.hsync = DT_PROP(DT_INST_CHILD(inst, display_timings), hsync_len),                 \
-		.hfp = DT_PROP(DT_INST_CHILD(inst, display_timings), hfront_porch),                \
-		.vbp = DT_PROP(DT_INST_CHILD(inst, display_timings), vback_porch),                 \
-		.vsync = DT_PROP(DT_INST_CHILD(inst, display_timings), vsync_len),                 \
-		.vfp = DT_PROP(DT_INST_CHILD(inst, display_timings), vfront_porch),                \
 		.gip_e0 = DT_INST_PROP_OR(inst, gip_e0, {}),                                       \
 		.gip_e1 = DT_INST_PROP_OR(inst, gip_e1, {}),                                       \
 		.gip_e2 = DT_INST_PROP_OR(inst, gip_e2, {}),                                       \

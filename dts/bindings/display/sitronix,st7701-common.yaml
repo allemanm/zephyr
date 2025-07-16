@@ -1,15 +1,7 @@
 # Copyright (c) 2025 Arduino SA
 # SPDX-License-Identifier: Apache-2.0
 
-title: Sitronix ST7701 display controller
-
-description: |
-    The Sitronix ST7701 is a 16.7M colors TFT-LCD controller
-    with a maximum 480RGBx864 resolution.
-
-compatible: "sitronix,st7701"
-
-include: [mipi-dsi-device.yaml, display-controller.yaml]
+include: display-controller.yaml
 
 properties:
   reset-gpios:
