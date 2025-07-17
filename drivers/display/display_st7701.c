@@ -303,7 +303,7 @@ static int st7701_configure(const struct device *dev)
 	const uint8_t ff2[] = {DSI_CMD2BKX_SEL, 0x77, 0x01, 0x00, 0x00, DSI_CMD2BKX_SEL_NONE};
 
 	const uint8_t control0[] = {DSI_CMD2BKX_SEL, 0x77, 0x01, 0x00, 0x00, DSI_CMD2BK0_SEL};
-	const uint8_t control1[] = {0xC0, 0x63, 0x00};
+	const uint8_t control1[] = {0xC0, ((cfg->height / 8) - 1), ((cfg->height % 8) / 2)};
 	const uint8_t control2[] = {0xC1, 0x11, 0x02};
 	const uint8_t control3[] = {0xC2, 0x01, 0x08};
 	const uint8_t control4[] = {0xCC, 0x18};
