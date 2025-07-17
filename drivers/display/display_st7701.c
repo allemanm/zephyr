@@ -104,6 +104,7 @@ struct st7701_config {
 	uint8_t gip_ed[17];
 	uint8_t pvgamctrl[17];
 	uint8_t nvgamctrl[17];
+	bool bgr_mode;
 };
 
 struct st7701_data {
@@ -379,6 +380,12 @@ static int st7701_configure(const struct device *dev)
 		return ret;
 	}
 
+	buf[0] = cfg->bgr_mode ? 0x08 : 0x00;
+	ret = cfg->dcs_write(dev, MIPI_DCS_SET_ADDRESS_MODE, buf, 1);
+	if (ret < 0) {
+		return ret;
+	}
+
 	buf[0] = 0x00;
 	buf[1] = 0x00;
 	sys_put_be16(data->xres, (uint8_t *)&buf[2]);
@@ -606,6 +613,7 @@ static int st7701_init(const struct device *dev)
 		.gip_ed = DT_INST_PROP_OR(inst, gip_ed, {}),                                       \
 		.pvgamctrl = DT_INST_PROP_OR(inst, pvgamctrl, {}),                                 \
 		.nvgamctrl = DT_INST_PROP_OR(inst, nvgamctrl, {}),                                 \
+		.bgr_mode = DT_INST_PROP(inst, bgr_mode),                                          \
 	};                                                                                         \
 	static struct st7701_data st7701_data_##inst = {                                           \
 		.dsi_pixel_format = DT_INST_PROP(inst, pixel_format),                              \

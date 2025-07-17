@@ -27,6 +27,10 @@ properties:
     description: |
       Display rotation (CW) in degrees. Defaults to 0, display default.
 
+  bgr-mode:
+    type: boolean
+    description: Enables BGR mode
+
   gip-e0:
     type: uint8-array
     description: GIP setting at address 0xE0.
