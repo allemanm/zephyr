@@ -447,6 +447,18 @@
 				intensity = <0>;
 				scan-limit = <7>;
 			};
+
+			test_spi_st7701: st7701@9 {
+				compatible = "sitronix,st7701";
+				reg = <0x9>;
+				spi-max-frequency = <2000000>;
+				height = <800>;
+				width = <480>;
+				pixel-format = <0>;
+				rotation = <0>;
+				pvgamctrl = [00 10 0E 02 03 0E 07 02 07 0A 12 27 37 00 0D 0E 10];
+				nvgamctrl = [00 10 0E 03 03 0F 06 02 08 0A 13 26 36 00 0D 0E 10];
+			};
 		};
 
 		test_led_strip_matrix {
