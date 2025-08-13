@@ -10,6 +10,7 @@
 #include <zephyr/drivers/display.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/pm/device.h>
 #include <zephyr/kernel.h>
 #include <fsl_elcdif.h>
 
@@ -338,6 +339,32 @@ static void mcux_elcdif_isr(const struct device *dev)
 	}
 }
 
+#ifdef CONFIG_PM_DEVICE
+static int mcux_elcdif_pm_action(const struct device *dev,
+				 enum pm_device_action action)
+{
+	const struct mcux_elcdif_config *config = dev->config;
+	struct mcux_elcdif_data *dev_data = dev->data;
+
+	if (!dev_data->running) {
+		return 0;
+	}
+
+	switch (action) {
+	case PM_DEVICE_ACTION_RESUME:
+		ELCDIF_RgbModeStart(config->base);
+		break;
+	case PM_DEVICE_ACTION_SUSPEND:
+		ELCDIF_RgbModeStop(config->base);
+		break;
+	default:
+		return -ENOTSUP;
+	}
+
+	return 0;
+}
+#endif
+
 static int mcux_elcdif_init(const struct device *dev)
 {
 	const struct mcux_elcdif_config *config = dev->config;
@@ -435,9 +462,10 @@ static DEVICE_API(display, mcux_elcdif_api) = {
 		.next_idx = 0,                                                                     \
 		.pixel_format = DT_INST_PROP(id, pixel_format),                                    \
 	};                                                                                         \
-	DEVICE_DT_INST_DEFINE(id, &mcux_elcdif_init, NULL, &mcux_elcdif_data_##id,                 \
-			      &mcux_elcdif_config_##id, POST_KERNEL, CONFIG_DISPLAY_INIT_PRIORITY, \
-			      &mcux_elcdif_api);                                                   \
+	PM_DEVICE_DT_INST_DEFINE(id, mcux_elcdif_pm_action);                                       \
+	DEVICE_DT_INST_DEFINE(id, &mcux_elcdif_init, PM_DEVICE_DT_INST_GET(id),                    \
+			      &mcux_elcdif_data_##id, &mcux_elcdif_config_##id, POST_KERNEL,       \
+			      CONFIG_DISPLAY_INIT_PRIORITY, &mcux_elcdif_api);                     \
 	static void mcux_elcdif_config_func_##id(const struct device *dev)                         \
 	{                                                                                          \
 		IRQ_CONNECT(DT_INST_IRQN(id), DT_INST_IRQ(id, priority), mcux_elcdif_isr,          \
