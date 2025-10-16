@@ -374,6 +374,8 @@ void sys_trace_gpio_fire_callback_user(const struct device *port, struct gpio_ca
 #define sys_port_trace_k_heap_sys_k_calloc_exit(heap, ret)
 #define sys_port_trace_k_heap_sys_k_realloc_enter(heap, ptr)
 #define sys_port_trace_k_heap_sys_k_realloc_exit(heap, ptr, ret)
+#define sys_port_trace_k_heap_sys_k_aligned_realloc_enter(heap, ptr)
+#define sys_port_trace_k_heap_sys_k_aligned_realloc_exit(heap, ptr, ret)
 
 #define sys_port_trace_k_mem_slab_init(slab, rc)
 #define sys_port_trace_k_mem_slab_alloc_enter(slab, timeout)

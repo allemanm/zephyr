@@ -6013,6 +6013,19 @@ void *k_calloc(size_t nmemb, size_t size);
  */
 void *k_realloc(void *ptr, size_t size);
 
+/** @brief Expand the size of an existing allocation with a specified alignment
+ *
+ * This routine works similar to k_realloc but the memory is allocated
+ * as per sys_heap_aligned_realloc.
+ *
+ * @param ptr Original pointer returned from a previous allocation
+ * @param align Alignment of memory requested (in bytes).
+ * @param size Amount of memory requested (in bytes).
+ *
+ * @return Pointer to memory the caller can now use, or NULL.
+ */
+void *k_aligned_realloc(void *ptr, size_t align, size_t size);
+
 /** @} */
 
 /* polling API - PRIVATE */

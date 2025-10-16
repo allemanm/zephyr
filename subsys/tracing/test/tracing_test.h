@@ -434,6 +434,11 @@
 #define sys_port_trace_k_heap_sys_k_realloc_exit(heap, ptr, ret)                                   \
 	sys_trace_k_heap_sys_k_realloc_exit(heap, ptr, size, ret)
 
+#define sys_port_trace_k_heap_sys_k_aligned_realloc_enter(heap, ptr)                               \
+	sys_trace_k_heap_sys_k_aligned_realloc_enter(heap, ptr, size)
+#define sys_port_trace_k_heap_sys_k_aligned_realloc_exit(heap, ptr, ret)                           \
+	sys_trace_k_heap_sys_k_aligned_realloc_exit(heap, ptr, size, ret)
+
 #define sys_port_trace_k_mem_slab_init(slab, rc)                                                   \
 	sys_trace_k_mem_slab_init(slab, buffer, block_size, num_blocks, rc)
 #define sys_port_trace_k_mem_slab_alloc_enter(slab, timeout)                                       \
@@ -728,6 +733,9 @@ void sys_trace_k_heap_sys_k_calloc_enter(struct k_heap *h, size_t nmemb, size_t 
 void sys_trace_k_heap_sys_k_calloc_exit(struct k_heap *h, size_t nmemb, size_t size, void *ret);
 void sys_trace_k_heap_sys_k_realloc_enter(struct k_heap *h, void *ptr, size_t bytes);
 void sys_trace_k_heap_sys_k_realloc_exit(struct k_heap *h, void *ptr, size_t bytes, void *ret);
+void sys_trace_k_heap_sys_k_aligned_realloc_enter(struct k_heap *h, void *ptr, size_t bytes);
+void sys_trace_k_heap_sys_k_aligned_realloc_exit(struct k_heap *h, void *ptr, size_t bytes,
+						 void *ret);
 
 void sys_trace_k_mem_slab_init(struct k_mem_slab *slab, void *buffer, size_t block_size,
 			       uint32_t num_blocks, int ret);

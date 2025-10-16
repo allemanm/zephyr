@@ -1908,6 +1908,21 @@
  */
 #define sys_port_trace_k_heap_sys_k_realloc_exit(heap, ptr, ret)
 
+/**
+ * @brief Trace System heap aligned realloc enter
+ * @param heap Heap object
+ * @param ptr Memory pointer
+ */
+#define sys_port_trace_k_heap_sys_k_aligned_realloc_enter(heap, ptr)
+
+/**
+ * @brief Trace System heap aligned realloc exit
+ * @param heap Heap object
+ * @param ptr Memory pointer
+ * @param ret Return value
+ */
+#define sys_port_trace_k_heap_sys_k_aligned_realloc_exit(heap, ptr, ret)
+
 /** @} */ /* end of subsys_tracing_apis_heap */
 
 /**
