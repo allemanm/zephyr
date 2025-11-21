@@ -11,6 +11,7 @@
 #include <zephyr/device.h>
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/mdio.h>
 #include <zephyr/net/phy.h>
 #include <zephyr/net/mii.h>
@@ -30,6 +31,8 @@ struct phy_mii_dev_config {
 	int fixed_speed;
 	enum phy_link_speed default_speeds;
 	const struct device * const mdio;
+	const struct gpio_dt_spec reset_gpio;
+	uint32_t reset_assert_duration_us;
 };
 
 struct phy_mii_dev_data {
@@ -117,29 +120,49 @@ static int read_gigabit_supported_flag(const struct device *dev, bool *supported
 
 static int reset(const struct device *dev)
 {
+	const struct phy_mii_dev_config *const cfg = dev->config;
 	uint32_t timeout = 12U;
 	uint16_t value;
+	int ret;
 
-	/* Issue a soft reset */
-	if (phy_mii_reg_write(dev, MII_BMCR, MII_BMCR_RESET) < 0) {
-		return -EIO;
-	}
-
-	/* Wait up to 0.6s for the reset sequence to finish. According to
-	 * IEEE 802.3, Section 2, Subsection 22.2.4.1.1 a PHY reset may take
-	 * up to 0.5 s.
-	 */
-	do {
-		if (timeout-- == 0U) {
-			return -ETIMEDOUT;
+	if (gpio_is_ready_dt(&cfg->reset_gpio)) {
+		/* Issue a hard reset */
+		ret = gpio_pin_configure_dt(&cfg->reset_gpio, GPIO_OUTPUT_ACTIVE);
+		if (ret < 0) {
+			LOG_ERR("Failed to configure RST pin (%d)", ret);
+			return ret;
 		}
 
-		k_sleep(K_MSEC(50));
+		/* assertion time */
+		k_busy_wait(cfg->reset_assert_duration_us);
 
-		if (phy_mii_reg_read(dev, MII_BMCR, &value) < 0) {
+		ret = gpio_pin_set_dt(&cfg->reset_gpio, 0);
+		if (ret < 0) {
+			LOG_ERR("Failed to de-assert RST pin (%d)", ret);
+			return ret;
+		}
+	} else {
+		/* Issue a soft reset */
+		if (phy_mii_reg_write(dev, MII_BMCR, MII_BMCR_RESET) < 0) {
 			return -EIO;
 		}
-	} while ((value & MII_BMCR_RESET) != 0U);
+
+		/* Wait up to 0.6s for the reset sequence to finish. According to
+		 * IEEE 802.3, Section 2, Subsection 22.2.4.1.1 a PHY reset may take
+		 * up to 0.5 s.
+		 */
+		do {
+			if (timeout-- == 0U) {
+				return -ETIMEDOUT;
+			}
+
+			k_sleep(K_MSEC(50));
+
+			if (phy_mii_reg_read(dev, MII_BMCR, &value) < 0) {
+				return -EIO;
+			}
+		} while ((value & MII_BMCR_RESET) != 0U);
+	}
 
 	return 0;
 }
@@ -560,7 +583,11 @@ static const struct phy_mii_dev_config phy_mii_dev_config_##n = {	 \
 	.fixed_speed = DT_INST_ENUM_IDX_OR(n, fixed_link, 0),		 \
 	.default_speeds = PHY_INST_GENERATE_DEFAULT_SPEEDS(n),		 \
 	.mdio = UTIL_AND(UTIL_NOT(IS_FIXED_LINK(n)),			 \
-			 DEVICE_DT_GET(DT_INST_BUS(n)))			 \
+			 DEVICE_DT_GET(DT_INST_BUS(n))),		 \
+	.reset_gpio = GPIO_DT_SPEC_INST_GET_OR(n,			 \
+			 reset_gpios, {0}),				 \
+	.reset_assert_duration_us = DT_INST_PROP_OR(n,			 \
+			 reset_assert_duration_us, 0),			 \
 };
 
 #define PHY_MII_DATA(n)							 \
