@@ -500,14 +500,15 @@ static void st7701_get_capabilities(const struct device *dev,
 #ifdef CONFIG_PM_DEVICE
 static int st7701_pm_action(const struct device *dev, enum pm_device_action action)
 {
+	const struct st7701_config *cfg = dev->config;
 	int ret;
 
 	switch (action) {
 	case PM_DEVICE_ACTION_RESUME:
-		ret = st7701_dcs_write(dev, MIPI_DCS_EXIT_SLEEP_MODE, NULL, 0);
+		ret = cfg->dcs_write(dev, MIPI_DCS_EXIT_SLEEP_MODE, NULL, 0);
 		break;
 	case PM_DEVICE_ACTION_SUSPEND:
-		ret = st7701_dcs_write(dev, MIPI_DCS_ENTER_SLEEP_MODE, NULL, 0);
+		ret = cfg->dcs_write(dev, MIPI_DCS_ENTER_SLEEP_MODE, NULL, 0);
 		break;
 	default:
 		return -ENOTSUP;
