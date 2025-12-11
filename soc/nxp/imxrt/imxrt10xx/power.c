@@ -140,7 +140,7 @@ static void bandgap_set(bool on)
 }
 
 /* Should only be used if core clocks have been reduced- drops SOC voltage */
-static void lpm_drop_voltage(void)
+__unused static void lpm_drop_voltage(void)
 {
 	/* Move to the internal RC oscillator, since we are using low power clocks */
 	CLOCK_InitRcOsc24M();
@@ -163,7 +163,7 @@ static void lpm_drop_voltage(void)
 }
 
 /* Undo the changes made by lpm_drop_voltage so clocks can be raised */
-static void lpm_raise_voltage(void)
+__unused static void lpm_raise_voltage(void)
 {
 	/* Enable analog bandgap */
 	bandgap_set(true);
@@ -198,7 +198,9 @@ void pm_state_set(enum pm_state state, uint8_t substate_id)
 		if (lpm_clock_hooks.clock_set_low_power) {
 			/* Drop the SOC clocks to low power mode, and decrease core voltage */
 			lpm_clock_hooks.clock_set_low_power();
-			lpm_drop_voltage();
+			/* Enabling this, causes the cpu to sometimes crash when returning to run mode.
+			 * We only 'miss' about 2mA by disabling this. */
+			// lpm_drop_voltage();
 		}
 		lpm_set_sleep_mode_config(kCLOCK_ModeWait);
 		lpm_enter_sleep_mode(kCLOCK_ModeWait);
@@ -227,7 +229,9 @@ void pm_state_exit_post_ops(enum pm_state state, uint8_t substate_id)
 		lpm_set_run_mode_config();
 		if (lpm_clock_hooks.clock_set_run) {
 			/* Raise core voltage and restore SOC clocks */
-			lpm_raise_voltage();
+			/* Enabling this, causes the cpu to sometimes crash when returning to run mode.
+			 * We only 'miss' about 2mA by disabling this. */
+			// lpm_raise_voltage();
 			lpm_clock_hooks.clock_set_run();
 		}
 		LOG_DBG("exited PM state suspend to idle");
